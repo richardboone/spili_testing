@@ -1,0 +1,16 @@
+**/__pycache__/
+*.pyc
+**/outputs/
+**/output/
+**/weight/
+**/weights/
+**/.idea/
+**/.vscode/
+*.swp
+**/.env
+**/config.js
+**/secret.json
+*.key
+**/dist/
+**/build/
+*.log
