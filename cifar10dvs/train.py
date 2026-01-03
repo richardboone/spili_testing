@@ -143,7 +143,7 @@ def parse_args():
     parser.add_argument('--mixup-off-epoch', default=0, type=int, metavar='N',
                         help='Turn off mixup after this epoch, disabled if 0 (default: 0)')
     
-    parser.add_argument("--beta", default= [0.5,0.5], 
+    parser.add_argument("--beta", default= [0.5,0.8], 
                         type= float, nargs = 2, metavar='N N')
     parser.add_argument("--aug", type=float, default=1.0)
 
