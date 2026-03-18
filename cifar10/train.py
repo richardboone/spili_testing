@@ -6,6 +6,7 @@ import logging
 from collections import OrderedDict
 from contextlib import suppress
 from datetime import datetime
+from functools import partial
 from spikingjelly.clock_driven import functional
 
 import torch
@@ -313,7 +314,16 @@ def main():
 
     if args.log_wandb:
         if has_wandb:
-            wandb.init(project=args.experiment, config=args)
+            wandb.init(project="spiliformer",
+                       name=args.experiment,
+                       config=args)
+            # Append unique Run ID to experiment name to prevent
+            # multi-agent race conditions on checkpoint files
+            if hasattr(wandb, 'run') and wandb.run is not None:
+                args.experiment = f"{args.experiment}_{wandb.run.id}"
+            
+            # Define default step metric for all plots
+            wandb.define_metric("*", step_metric="epoch")
         else:
             _logger.warning("You've requested to log metrics to wandb but package not found. "
                             "Metrics not being logged to wandb, try `pip install wandb`")
@@ -425,7 +435,7 @@ def main():
         if args.local_rank == 0:
             _logger.info('Using NVIDIA APEX AMP. Training in mixed precision.')
     elif use_amp == 'native':
-        amp_autocast = torch.cuda.amp.autocast
+        amp_autocast = partial(torch.amp.autocast, device_type='cuda')
         loss_scaler = NativeScaler()
         if args.local_rank == 0:
             _logger.info('Using native Torch AMP. Training in mixed precision.')
@@ -624,6 +634,14 @@ def main():
                     log_suffix=' (EMA)')
                 eval_metrics = ema_eval_metrics
 
+            if args.log_wandb and has_wandb:
+                wandb.log({
+                    "epoch": epoch + 1,
+                    "eval/loss": eval_metrics['loss'],
+                    "eval/top1": eval_metrics['top1'],
+                    "eval/top5": eval_metrics['top5'],
+                })
+
             if lr_scheduler is not None:
                 # step LR for next epoch
                 lr_scheduler.step(epoch + 1, eval_metrics[eval_metric])
@@ -661,6 +679,8 @@ def train_one_epoch(
     batch_time_m = AverageMeter()
     data_time_m = AverageMeter()
     losses_m = AverageMeter()
+    top1_m = AverageMeter()
+    top5_m = AverageMeter()
 
     model.train()
 
@@ -682,6 +702,10 @@ def train_one_epoch(
             functional.reset_net(model)
             x2, recon_loss = model(tmp, second_forward=feedback)
             loss = (1-beta) * loss_fn(x1, target) + beta * loss_fn(x2, target)
+
+        with torch.no_grad():
+            acc_target = target.argmax(dim=1) if target.ndim > 1 else target
+            acc1, acc5 = accuracy(x2, acc_target, topk=(1, 5))
 
         if not args.distributed:
             losses_m.update(loss.item(), input.size(0))
@@ -717,6 +741,14 @@ def train_one_epoch(
             if args.distributed:
                 reduced_loss = reduce_tensor(loss.data, args.world_size)
                 losses_m.update(reduced_loss.item(), input.size(0))
+                acc1 = reduce_tensor(acc1, args.world_size)
+                acc5 = reduce_tensor(acc5, args.world_size)
+                top1_m.update(acc1.item(), input.size(0))
+                top5_m.update(acc5.item(), input.size(0))
+            else:
+                losses_m.update(loss.item(), input.size(0))
+                top1_m.update(acc1.item(), input.size(0))
+                top5_m.update(acc5.item(), input.size(0))
 
             if args.local_rank == 0:
                 _logger.info(
@@ -735,6 +767,19 @@ def train_one_epoch(
                         rate_avg=input.size(0) * args.world_size / batch_time_m.avg,
                         lr=lr,
                         data_time=data_time_m))
+
+                if args.log_wandb and has_wandb:
+                    wandb.log({
+                        "epoch": epoch + (batch_idx + 1) / len(loader),
+                        "train/loss": losses_m.val,
+                        "train/loss_avg": losses_m.avg,
+                        "train/acc1": top1_m.val,
+                        "train/acc1_avg": top1_m.avg,
+                        "train/acc5": top5_m.val,
+                        "train/acc5_avg": top5_m.avg,
+                        "train/lr": lr,
+                        "train/batch_time": batch_time_m.val,
+                    })
 
                 if args.save_images and output_dir:
                     torchvision.utils.save_image(

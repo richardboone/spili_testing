@@ -39,6 +39,14 @@ from spikingjelly.clock_driven import functional
 from engine_finetune import train_one_epoch, evaluate
 
 
+try:
+    import wandb
+
+    has_wandb = True
+except ImportError:
+    has_wandb = False
+
+
 def get_args_parser():
     # important params
     parser = argparse.ArgumentParser('MAE fine-tuning for image classification', add_help=False)
@@ -151,6 +159,11 @@ def get_args_parser():
     parser.add_argument('--dist_on_itp', action='store_true')
     parser.add_argument('--dist_url', default='env://',
                         help='url used to set up distributed training')
+    parser.add_argument('--dist_port', default='29500', type=str,
+                        help='port used to set up distributed training')
+
+    parser.add_argument('--log-wandb', action='store_true', default=False,
+                    help='log training and validation metrics to wandb')
     
  
     # beta
@@ -163,6 +176,22 @@ def get_args_parser():
 
 def main(args): 
     misc.init_distributed_mode(args)
+    if args.log_wandb:
+        if has_wandb:
+            wandb.init(project="spiliformer",
+                       name=args.experiment,
+                       config=args)
+            # Append unique Run ID to experiment name to prevent
+            # multi-agent race conditions on checkpoint files
+            if hasattr(wandb, 'run') and wandb.run is not None:
+                args.experiment = f"{args.experiment}_{wandb.run.id}"
+            
+            # Define default step metric for all plots
+            wandb.define_metric("*", step_metric="epoch")
+        else:
+            _logger.warning("You've requested to log metrics to wandb but package not found. "
+                            "Metrics not being logged to wandb, try `pip install wandb`")
+
 
     print('job dir: {}'.format(os.path.dirname(os.path.realpath(__file__))))
     print("{}".format(args).replace(', ', ',\n'))
@@ -303,9 +332,18 @@ def main(args):
             args=args
         )
 
-        test_stats = evaluate(data_loader_val, model, device,td = args.td)
+        test_stats = evaluate(data_loader_val, model, device)
         print(f"Accuracy of the network on the {len(dataset_val)} test images: {test_stats['acc1']:.1f}%")
-
+        if args.log_wandb and has_wandb:
+            wandb.log({
+                "epoch": epoch + 1,
+                "train/loss": train_stats['loss'],
+                "train/acc1": train_stats['acc1'],
+                "train/acc5": train_stats['acc5'],
+                "eval/loss": test_stats['loss'],
+                "eval/top1": test_stats['top1'],
+                "eval/top5": test_stats['top5'],
+            })
         if True:
             if args.output_dir:
                 misc.save_model(
