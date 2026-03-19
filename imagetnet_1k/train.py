@@ -164,6 +164,8 @@ def get_args_parser():
 
     parser.add_argument('--log-wandb', action='store_true', default=False,
                     help='log training and validation metrics to wandb')
+    parser.add_argument('--experiment', default='', type=str, metavar='NAME',
+                    help='name of train experiment, name of sub-folder for output')
     
  
     # beta
